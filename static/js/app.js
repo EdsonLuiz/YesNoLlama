@@ -27,6 +27,14 @@ let thinkExpanded = false; // track think block expand state across re-renders
 let isGenerating = false;
 let abortController = null;
 
+function shouldAutoScroll() {
+    return chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+}
+
+function scrollToBottom() {
+    if (shouldAutoScroll()) chat.scrollTop = chat.scrollHeight;
+}
+
 // --- Init ---
 
 async function init() {
@@ -185,7 +193,7 @@ async function justAnswerMe(event) {
                         if (delta) {
                             fullText += delta;
                             assistantDiv.innerHTML = renderMarkdown(fullText, true);
-                            chat.scrollTop = chat.scrollHeight;
+                            scrollToBottom();
                         }
                     } catch {}
                 }
@@ -246,7 +254,7 @@ function addMessage(role, content, meta) {
     }
 
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    scrollToBottom();
     return div;
 }
 
@@ -436,7 +444,7 @@ async function sendMessage() {
                         if (delta) {
                             fullText += delta;
                             assistantDiv.innerHTML = renderMarkdown(fullText, true);
-                            chat.scrollTop = chat.scrollHeight;
+                            scrollToBottom();
                         }
                     } catch {}
                 }

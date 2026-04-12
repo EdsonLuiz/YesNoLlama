@@ -35,6 +35,8 @@ chat UI in your browser at http://localhost:8000.
 The server includes a built-in chat interface at http://localhost:8000.
 No separate install, no Docker, no Node.js.
 
+A native Windows GUI is planned to replace the browser-based UI.
+
 Features:
 - Streaming chat with tokens appearing in real-time
 - Collapsible "Thinking..." blocks (Qwen3 reasoning models)
@@ -210,6 +212,11 @@ The server auto-detects your model type (VLM or LLM) from
 
 In dual mode, both pipelines run on separate devices with separate
 locks. They don't interfere with each other.
+
+> **Future simplification:** OpenVINO GenAI may unify VLMPipeline and
+> LLMPipeline into a single pipeline that handles both text and images.
+> When that lands, the dual-pipeline detection and routing logic in
+> NoLlama can be collapsed into one code path.
 
 ## Files
 

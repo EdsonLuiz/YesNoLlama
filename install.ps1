@@ -157,10 +157,15 @@ function Show-ModelMenu {
         Write-Host ""
     }
 
-    # Registry models
-    if ($RegistryModels.Count -gt 0) {
+    # Registry models — skip any already on disk
+    $localNames = @($LocalModels | ForEach-Object { $_.Name.ToLower() })
+    $filteredRegistry = @($RegistryModels | Where-Object {
+        $repoName = ($_.hf_id -split '/')[-1].ToLower()
+        $repoName -notin $localNames
+    })
+    if ($filteredRegistry.Count -gt 0) {
         Write-Host "  Download from HuggingFace:" -ForegroundColor Yellow
-        foreach ($dm in $RegistryModels) {
+        foreach ($dm in $filteredRegistry) {
             $dlTag = if ($dm.source -eq "pre-exported") { "download" } else { "convert" }
             $items += [PSCustomObject]@{
                 Action = $dm.source; Name = $dm.name; Path = $null
@@ -292,7 +297,9 @@ if ($HasNPU) {
         -LocalModels $npuLocal `
         -LocalLabel "Already converted (instant)"
 
+    $NpuSelectedName = $null
     if ($sel) {
+        $NpuSelectedName = $sel.Name
         $ok = Install-Model -Selected $sel -TargetDir $ModelDir
         if (-not $ok) { Write-Host ""; Write-Host "Model installation failed. You can re-run install.ps1 to try again." -ForegroundColor Yellow; Pop-Location; exit 1 }
         $StartArgs += @("--device", "NPU")
@@ -327,7 +334,7 @@ if ($HasNPU) {
                 Write-Host ""
             }
         } elseif ($gpuChoice -eq "B") {
-            $llmLocal = @($LocalModels | Where-Object { $_.Type -eq "llm" })
+            $llmLocal = @($LocalModels | Where-Object { $_.Type -eq "llm" -and $_.Name -ne $NpuSelectedName })
             $sel = Show-ModelMenu -Title "GPU LLM (bigger chat model)" `
                 -RegistryModels $Registry.gpu_llm `
                 -LocalModels $llmLocal

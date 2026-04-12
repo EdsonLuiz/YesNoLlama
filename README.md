@@ -59,6 +59,38 @@ Features:
 | ARC discrete | A770, B580 | Same as iGPU, more VRAM for larger models | VLM: no, LLM: yes |
 | CPU | Any Intel CPU | Fallback for everything | Yes (slowly) |
 
+### Benchmark (Core Ultra 7 258V, ARC 140V 16 GB)
+
+Tested with `benchmark.py` — 1 warmup + 5 runs, outliers discarded.
+
+**LLM text (Qwen3 8B INT4-CW, same model on NPU and CPU):**
+
+| Test | NPU | CPU |
+|---|---|---|
+| "Say hello" (thinking) | 11.7s, 5.2 tok/s | 8.1s, 7.4 tok/s |
+| "Say hello" (no-think) | 10.6s, 4.6 tok/s | 8.6s, 7.3 tok/s |
+| "What is 2+2?" (thinking) | 11.7s, 5.3 tok/s | 9.0s, 7.0 tok/s |
+| "What is 2+2?" (no-think) | 5.5s, 0.7 tok/s | 2.7s, 1.5 tok/s |
+
+**GPU (Qwen2.5-VL 3B on ARC 140V, non-streaming):**
+
+| Test | Time |
+|---|---|
+| "Say hello" (thinking) | 2.6s |
+| "Say hello" (no-think) | 2.6s |
+| "What is 2+2?" (thinking) | 2.6s |
+| "What is 2+2?" (no-think) | 2.4s |
+| Same vehicle? (2 images) | 3.8s |
+| Different vehicles? (2 images) | 3.8s |
+
+VLMPipeline doesn't stream, so tok/s can't be measured directly.
+Subtracting prompt overhead, ARC iGPU generation is roughly 3x faster
+than NPU for this hardware.
+
+CPU beats NPU on throughput (~7.4 vs ~5.2 tok/s) for this model.
+GPU text is fast but runs a smaller 3B model (not directly comparable).
+VLM image responses take ~3-4s regardless of answer length.
+
 ### Dual mode (NPU + GPU)
 
 When you have both, text requests go to the NPU (streaming) and image
@@ -274,6 +306,8 @@ The repo is pure code.
   - Intel ARC discrete GPU (A770, B580, etc.)
   - Any Intel CPU (slower, but works)
 - ~1-17 GB disk per model
+
+`install.ps1` handles the venv, dependencies, and model download.
 
 ## A note about small models
 

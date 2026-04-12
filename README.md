@@ -238,6 +238,28 @@ hardware. All pre-exported models are download-only (no conversion).
 The menu is defined in `models.json` — add entries when new models
 are verified.
 
+### Adding models outside the menu
+
+Use `download-model.ps1` to grab any HuggingFace model:
+
+```powershell
+# Pre-exported OpenVINO model (just download)
+.\download-model.ps1 OpenVINO/Qwen3-8B-int4-cw-ov
+
+# Convert a HuggingFace model to OpenVINO
+.\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int8
+
+# With trust-remote-code (some models require this)
+.\download-model.ps1 Qwen/Qwen2.5-VL-3B-Instruct --convert --weight int4 --trust
+```
+
+Models download to `~/models/<name>/`. Point NoLlama at them:
+
+```powershell
+python nollama.py --model-dir ~/models/my-model --device GPU
+python nollama.py --gpu-model-dir ~/models/my-vlm
+```
+
 ### NPU models (chat)
 
 | Model | Size | Notes |
@@ -285,13 +307,15 @@ locks. They don't interfere with each other.
 ## Files
 
 ```
-nollama.py       The server
-install.ps1         Setup wizard
-start.ps1           Auto-generated launcher (after install)
-models.json         Curated model registry
-model/              Primary model (NPU or GPU)
-gpu-model/          Secondary GPU model (dual mode)
-venv/               Python virtual environment
+nollama.py              The server
+install.ps1             Setup wizard
+download-model.ps1      Download/convert any HuggingFace model
+benchmark.py            Device performance benchmark
+start.ps1               Auto-generated launcher (after install)
+models.json             Curated model registry
+model/                  Primary model (NPU or GPU)
+gpu-model/              Secondary GPU model (dual mode)
+venv/                   Python virtual environment
 ```
 
 `model/`, `gpu-model/`, `venv/`, and `start.ps1` are gitignored.

@@ -175,6 +175,7 @@ class DeviceSlot:
         self.model_type = ""             # "vlm" or "llm"
         self.status = "not_configured"   # -> "loading" -> "warming_up" -> "ready" / "error"
         self.lock = threading.Lock()
+        self._cancel = threading.Event()  # signal to stop generation
 
     def load(self, model_dir):
         """Load model, auto-detecting VLM vs LLM."""
@@ -245,6 +246,10 @@ class DeviceSlot:
             result = self.pipe.generate(history, gen)
         return extract_text(result)
 
+    def cancel(self):
+        """Signal the current generation to stop."""
+        self._cancel.set()
+
     def stream_llm(self, raw_messages, gen, completion_id, created, t0):
         """LLM generate — SSE streaming."""
         history = ovg.ChatHistory()
@@ -253,8 +258,12 @@ class DeviceSlot:
 
         token_queue = Queue()
         token_count = 0
+        self._cancel.clear()
+        cancelled = False
 
         def streamer_callback(token):
+            if self._cancel.is_set():
+                return True  # stop generation
             token_queue.put(token)
             return False
 
@@ -266,40 +275,47 @@ class DeviceSlot:
         t = threading.Thread(target=_generate, daemon=True)
         t.start()
 
-        chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": self.model_name,
-            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-        }
-        yield f"data: {json.dumps(chunk)}\n\n"
-
-        while True:
-            try:
-                token = token_queue.get(timeout=120)
-            except Empty:
-                break
-            if token is None:
-                break
-            token_count += 1
+        try:
             chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": self.model_name,
-                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk)}\n\n"
 
-        chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": self.model_name,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-        yield f"data: {json.dumps(chunk)}\n\n"
-        yield "data: [DONE]\n\n"
+            while True:
+                try:
+                    token = token_queue.get(timeout=120)
+                except Empty:
+                    break
+                if token is None:
+                    break
+                token_count += 1
+                chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            finish_reason = "stop" if not self._cancel.is_set() else "cancelled"
+            chunk = {
+                "id": completion_id, "object": "chat.completion.chunk",
+                "created": created, "model": self.model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            # Safety net: if client disconnects, stop generation
+            self._cancel.set()
+            cancelled = self._cancel.is_set()
 
         elapsed = time.perf_counter() - t0
         tps = token_count / elapsed if elapsed > 0 else 0
+        tag = " (cancelled)" if cancelled else ""
         print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
-              f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s)",
+              f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s){tag}",
               flush=True)
 
     @property
@@ -412,6 +428,15 @@ def list_models():
                 "owned_by": f"local-{slot.device_name.lower()}",
             })
     return jsonify({"object": "list", "data": data})
+
+
+@app.route("/v1/cancel", methods=["POST"])
+def cancel_generation():
+    """Stop any in-progress generation. Returns immediately."""
+    for slot in (primary, secondary):
+        if slot:
+            slot.cancel()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
@@ -705,8 +730,11 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
 
     token_queue = Queue()
     token_count = 0
+    slot._cancel.clear()
 
     def streamer_callback(token):
+        if slot._cancel.is_set():
+            return True
         token_queue.put(token)
         return False
 
@@ -718,30 +746,33 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
     t = threading.Thread(target=_generate, daemon=True)
     t.start()
 
-    while True:
-        try:
-            token = token_queue.get(timeout=120)
-        except Empty:
-            break
-        if token is None:
-            break
-        token_count += 1
+    try:
+        while True:
+            try:
+                token = token_queue.get(timeout=120)
+            except Empty:
+                break
+            if token is None:
+                break
+            token_count += 1
+            yield json.dumps({
+                "model": slot.model_name,
+                "message": {"role": "assistant", "content": token},
+                "done": False,
+            }) + "\n"
+
+        elapsed = time.perf_counter() - t0
+        tps = token_count / elapsed if elapsed > 0 else 0
+
         yield json.dumps({
             "model": slot.model_name,
-            "message": {"role": "assistant", "content": token},
-            "done": False,
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "total_duration": int(elapsed * 1e9),
+            "eval_count": token_count,
         }) + "\n"
-
-    elapsed = time.perf_counter() - t0
-    tps = token_count / elapsed if elapsed > 0 else 0
-
-    yield json.dumps({
-        "model": slot.model_name,
-        "message": {"role": "assistant", "content": ""},
-        "done": True,
-        "total_duration": int(elapsed * 1e9),
-        "eval_count": token_count,
-    }) + "\n"
+    finally:
+        slot._cancel.set()
 
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
           f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s)", flush=True)
@@ -839,8 +870,11 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
 
     token_queue = Queue()
     token_count = 0
+    slot._cancel.clear()
 
     def streamer_callback(token):
+        if slot._cancel.is_set():
+            return True
         token_queue.put(token)
         return False
 
@@ -852,28 +886,31 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
     t = threading.Thread(target=_generate, daemon=True)
     t.start()
 
-    while True:
-        try:
-            token = token_queue.get(timeout=120)
-        except Empty:
-            break
-        if token is None:
-            break
-        token_count += 1
+    try:
+        while True:
+            try:
+                token = token_queue.get(timeout=120)
+            except Empty:
+                break
+            if token is None:
+                break
+            token_count += 1
+            yield json.dumps({
+                "model": slot.model_name,
+                "response": token,
+                "done": False,
+            }) + "\n"
+
+        elapsed = time.perf_counter() - t0
         yield json.dumps({
             "model": slot.model_name,
-            "response": token,
-            "done": False,
+            "response": "",
+            "done": True,
+            "total_duration": int(elapsed * 1e9),
+            "eval_count": token_count,
         }) + "\n"
-
-    elapsed = time.perf_counter() - t0
-    yield json.dumps({
-        "model": slot.model_name,
-        "response": "",
-        "done": True,
-        "total_duration": int(elapsed * 1e9),
-        "eval_count": token_count,
-    }) + "\n"
+    finally:
+        slot._cancel.set()
 
 
 # Stubs — clients expect these to exist

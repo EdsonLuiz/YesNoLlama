@@ -1,12 +1,14 @@
 # NoLlama
 
-An OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
+**Local LLM server for the full Intel stack.** NPU, ARC iGPU, ARC discrete, CPU.
+OpenAI + Ollama APIs. One server, every Intel device.
 
-No NVIDIA. No Ollama. No llama. **No problem.**
+No NVIDIA required. No Ollama install. No llama.cpp. **No problem.**
 
-Works on any Intel Core Ultra laptop with an NPU. If you also have an
-ARC GPU, it handles vision tasks alongside. If you have neither, it
-runs on CPU (slowly, with dignity).
+Runs on Intel Core Ultra laptops (NPU + ARC iGPU), desktops with ARC
+discrete GPUs (A770, B580), or any Intel CPU. Automatically detects your
+hardware, picks the best device, and exposes both OpenAI and Ollama
+compatible APIs — so any client that speaks to either just works.
 
 ## Quick start
 
@@ -22,13 +24,14 @@ chat UI in your browser at http://localhost:8000.
 
 ## What it does
 
-- **Built-in web UI** — chat window, image drop zone, dark theme. Opens automatically.
-- **OpenAI-compatible API** at `/v1/chat/completions`
-- **Auto-detects** NPU, GPU, CPU — picks the best available
-- **VLM support** — send images via base64 or `file://` URIs
+- **OpenAI API** (`/v1/chat/completions`) — works with any OpenAI client, OpenWebUI, etc.
+- **Ollama API** (`/api/chat`, `/api/generate`) — works with Ollama clients, OpenWebUI Ollama mode, etc.
+- **Auto-detects** NPU, ARC iGPU, ARC discrete, CPU — picks the best available
+- **VLM support** — send images via base64 or `file://` URIs for vision models
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
-- **Model menu** — curated list of models known to work, no conversion nightmares
+- **Built-in web UI** — chat, image drop zone, model selector, dark theme
+- **Model menu** — curated list of verified models, no conversion nightmares
 
 ## Web UI
 
@@ -49,11 +52,12 @@ Features:
 
 ## Device support
 
-| Device | What it does | Streaming? |
-|---|---|---|
-| NPU (Intel AI Boost) | Text chat via LLMPipeline | Yes |
-| GPU (Intel ARC) | Vision + text via VLMPipeline, or big LLM | VLM: no, LLM: yes |
-| CPU | Fallback for everything | Yes (slowly) |
+| Device | Examples | What it does | Streaming? |
+|---|---|---|---|
+| NPU (Intel AI Boost) | Core Ultra 7 258V | Text chat via LLMPipeline | Yes |
+| ARC iGPU | ARC 140V (Core Ultra) | Vision + text, or bigger LLM | VLM: no, LLM: yes |
+| ARC discrete | A770, B580 | Same as iGPU, more VRAM for larger models | VLM: no, LLM: yes |
+| CPU | Any Intel CPU | Fallback for everything | Yes (slowly) |
 
 ### Dual mode (NPU + GPU)
 
@@ -158,14 +162,42 @@ for chunk in resp:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
+## Ollama API
+
+NoLlama also serves a full Ollama-compatible API on port 11434 (the
+Ollama default). Any tool or client that talks to Ollama works without
+modification — it thinks it's talking to a real Ollama instance.
+
+Supported endpoints:
+
+- `POST /api/chat` — chat with streaming (newline-delimited JSON)
+- `POST /api/generate` — single-turn completion
+- `GET /api/tags` — list models
+- `POST /api/show` — model info
+
+```bash
+curl http://localhost:11434/api/chat \
+  -d '{"model":"qwen3-8b-int4-cw","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+Disable with `--ollama-port 0` if you don't need it or port 11434 is taken.
+
 ## Using with OpenWebUI
 
-In OpenWebUI settings:
+OpenWebUI can connect via either API:
+
+**OpenAI mode** (recommended):
 
 | Field | Value |
 |---|---|
 | Base URL | `http://host.docker.internal:8000/v1` |
 | API Key | `not-needed` |
+
+**Ollama mode** (no config needed if NoLlama runs on default port):
+
+| Field | Value |
+|---|---|
+| Ollama Base URL | `http://host.docker.internal:11434` |
 
 ## Models
 
@@ -236,8 +268,11 @@ The repo is pure code.
 ## Requirements
 
 - Python 3.10+
-- Intel Core Ultra (for NPU) or Intel ARC (for GPU)
-- OpenVINO 2026.1+
+- OpenVINO 2026.1+ with openvino-genai
+- At least one of:
+  - Intel Core Ultra (NPU + ARC iGPU)
+  - Intel ARC discrete GPU (A770, B580, etc.)
+  - Any Intel CPU (slower, but works)
 - ~1-17 GB disk per model
 
 ## A note about small models

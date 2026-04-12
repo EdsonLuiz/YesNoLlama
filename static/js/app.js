@@ -108,10 +108,11 @@ function buildRequestBody(overrides) {
 async function justAnswerMe(event) {
     event.stopPropagation();
 
-    // Abort current generation
+    // Abort current generation and tell server to stop
     if (abortController) {
         abortController.abort();
     }
+    fetch('/v1/cancel', { method: 'POST' }).catch(() => {});
 
     // Find the last user message
     let lastUserMsg = null;
@@ -608,6 +609,7 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.key === 'Escape' && isGenerating && abortController) {
         abortController.abort();
+        fetch('/v1/cancel', { method: 'POST' }).catch(() => {});
     }
 });
 

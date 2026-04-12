@@ -1,0 +1,13 @@
+# Runtime
+flask
+openvino>=2026.1.0
+openvino-genai>=2026.1.0.0
+openvino-tokenizers>=2026.1.0.0
+pillow>=10.3.0
+numpy>=1.26.4
+
+# Model export (used by install.ps1)
+optimum-intel[openvino]>=1.27.0
+transformers>=4.57.0
+accelerate>=1.0.0
+huggingface_hub>=0.36.0

@@ -1,0 +1,7 @@
+model/
+gpu-model/
+npu-model/
+venv/
+start.ps1
+__pycache__/
+*.pyc

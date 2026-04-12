@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoLlama</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="header">
+    <h1>NoLlama</h1>
+    <div class="header-controls">
+        <select id="model-select"></select>
+        <label class="setting" title="Temperature: 0 = deterministic, higher = more creative">
+            <span class="setting-label">Temp</span>
+            <input type="range" id="temperature" min="0" max="150" value="0" step="5">
+            <span id="temp-value">0.0</span>
+        </label>
+        <label class="setting toggle" title="Disable model thinking/reasoning">
+            <input type="checkbox" id="no-think">
+            <span class="setting-label">No-think</span>
+        </label>
+        <div class="status-dot" id="status-dot" title="checking..."></div>
+    </div>
+</div>
+
+<div class="chat" id="chat"></div>
+
+<div class="drop-overlay" id="drop-overlay">Drop image here</div>
+
+<div class="input-area">
+    <div class="input-wrap">
+        <div class="image-preview" id="image-preview">
+            <img id="preview-img" src="">
+            <button class="remove" id="remove-image">&times;</button>
+        </div>
+        <div class="input-row">
+            <button class="btn icon" id="attach-btn" title="Attach image">&#128247;</button>
+            <textarea id="message-input" rows="1" placeholder="Type a message... (paste or drop images)"></textarea>
+            <button class="btn" id="send-btn">Send</button>
+            <button class="btn icon" id="new-chat-btn" title="New chat">&#10227;</button>
+        </div>
+    </div>
+</div>
+
+<input type="file" id="file-input" accept="image/*" style="display:none">
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,44 +1,43 @@
 # TODO
 
-## Spinoff project: Ollama API wrapper for any OpenAI-compatible server
+## Spinoff project idea: Ollama API wrapper for any OpenAI-compatible server
 
-**Not part of NoLlama.** Separate repo — different scope (general-purpose
-API shim, not Intel-specific) and different audience (ops teams running
-OVMS, vLLM, llama.cpp-server, LM Studio, TGI, etc. who want Ollama
-clients to just work).
+**Not part of NoLlama.** Separate repo if pursued.
 
-Naming ideas: `ollamify`, `o2ollama`, `ollama-front`, `fakeollama`.
+### Honest assessment (verified 2026-04-13)
 
-### What it does
+Initial motivation was "tools that speak Ollama but not OpenAI." This
+turned out to be weaker than hoped:
 
-Listens on port 11434 (Ollama's default). Translates Ollama API calls
-to the upstream OpenAI-compatible server:
+- **Major tools support both.** Continue.dev, Zed, Cursor, Open WebUI,
+  VS Code extensions — all take custom OpenAI-compatible base URLs.
+- **Walled-garden tools don't help either way.** Android Studio's AI
+  (Gemini-only) and JetBrains AI Assistant (their own backend) won't
+  accept any local endpoint, Ollama or OpenAI.
+- **Genuinely Ollama-only tools are niche**: Llama Coder (VS Code),
+  Enchanted (macOS), Maid, various mobile clients. Real but small audience.
+
+### The narrower valid case
+
+- Protocol quirks: `/api/tags` vs `/v1/models` have different shapes.
+  Some tools nominally "OpenAI" still call Ollama-specific endpoints
+  (`/api/show` for metadata).
+- Ollama NDJSON vs OpenAI SSE framing trips tools tested against only one.
+- Dev ecosystems built around `ollama` CLI expect a real Ollama server.
+
+### If pursued
 
 | Ollama endpoint | Upstream call | Translation |
 |---|---|---|
 | `GET /api/tags` | `GET /v1/models` | reshape model list |
 | `POST /api/show` | `GET /v1/models` | pick one, reshape |
 | `POST /api/chat` | `POST /v1/chat/completions` | SSE → NDJSON |
-| `POST /api/generate` | `POST /v1/chat/completions` | wrap prompt as single user message |
+| `POST /api/generate` | `POST /v1/chat/completions` | wrap prompt as user msg |
 | `POST /api/pull`/`delete`/`copy` | stub — return success | |
 
-### Why it's simple
+One Python file, single config (`--upstream http://ovms:8080 --port 11434`).
+Reusable chunks already exist in nollama.py's `ollama_app` and
+`_ollama_stream_*` functions.
 
-- No model loading, no OpenVINO, no device detection
-- Pure HTTP proxy with light payload reshaping
-- The SSE → NDJSON translation is ~30 lines (already done in nollama.py,
-  just lift it out)
-- Single config: `--upstream http://ovms:8080` and `--port 11434`
-
-### Value
-
-Any tool that only speaks Ollama (Continue.dev, Android Studio's AI
-features, some IDE plugins, shell tools) suddenly works with any
-OpenAI-compatible backend. Small, focused utility — one Python file,
-Docker image, done.
-
-### Reusable from NoLlama
-
-The Ollama API layer in `nollama.py` (`ollama_app`, `_ollama_stream_chat`,
-`_ollama_stream_generate`) is the prototype — it talks to local DeviceSlots
-instead of an upstream, but the response-shaping code transfers directly.
+**Verdict**: Interesting afternoon project, but the audience is smaller
+than the initial Reddit comment suggested. Not urgent.

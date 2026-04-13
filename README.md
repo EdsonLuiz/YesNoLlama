@@ -10,6 +10,8 @@ discrete GPUs (A770, B580), or any Intel CPU. Automatically detects your
 hardware, picks the best device, and exposes both OpenAI and Ollama
 compatible APIs — so any client that speaks to either just works.
 
+![NoLlama in action](docs/images/nollama-demo.gif)
+
 ## Quick start
 
 ```powershell
@@ -37,6 +39,8 @@ chat UI in your browser at http://localhost:8000.
 
 The server includes a built-in chat interface at http://localhost:8000.
 No separate install, no Docker, no Node.js.
+
+![NoLlama chat UI](docs/images/nollama-chat.gif)
 
 A native Windows GUI is planned to replace the browser-based UI.
 

@@ -357,6 +357,32 @@ The repo is pure code.
 
 `install.ps1` handles the venv, dependencies, and model download.
 
+## Known limitations
+
+These are known and intentionally not fixed — either because the cause
+is upstream, the fix would hurt simplicity, or it doesn't matter for a
+local single-user tool.
+
+- **Cancel may not interrupt mid-generation.** The cancel endpoint
+  signals OpenVINO's streamer callback to stop. If OpenVINO is blocked
+  inside a native call and not invoking the callback, there's no way
+  to interrupt it from Python. Generation completes; lock releases
+  when it does.
+- **NPU prompt limit is 4096 tokens.** Long chat histories will
+  eventually exceed this. The UI doesn't trim history — use Ctrl+N to
+  start fresh if you hit the limit.
+- **VLM doesn't stream.** OpenVINO's VLMPipeline has no streaming API,
+  so vision responses arrive all at once. Waiting 3-5s for a VLM answer
+  is normal.
+- **Ollama management endpoints are stubs.** `/api/pull`, `/api/delete`,
+  `/api/copy` return success but don't do anything. Model management is
+  via `install.ps1` or `download-model.ps1`, not the API.
+- **No graceful shutdown.** Ctrl+C is abrupt. If you hit it mid-load,
+  NPU/GPU resources may not free cleanly — usually resolves on next
+  launch, occasionally needs a reboot.
+- **Flask dev server, not production.** Single-user local tool. Don't
+  put it on the internet without a reverse proxy.
+
 ## A note about small models
 
 During initial NPU testing with DeepSeek R1 1.5B, we asked:

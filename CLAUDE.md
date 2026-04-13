@@ -36,8 +36,8 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - NPU default prompt limit is 1024 tokens — we override to MAX_PROMPT_LEN=4096
 - VLMPipeline has no streaming support (OpenVINO limitation)
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
-- Web server thread may block — the "Just answer me, dammit!" cancel request can't reach it during generation
-- Scrolling is weird when LLM output/thinking is streaming in the web UI
+- Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
+- Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
 
 ## Verified models
 

@@ -16,6 +16,7 @@ Usage:
 import argparse
 import base64
 import io
+import itertools
 import json
 import os
 import socket
@@ -219,9 +220,10 @@ class DeviceSlot:
                 self.pipe.generate(history, gen)
             elapsed = time.perf_counter() - t0
             print(f" done ({elapsed:.1f}s)", flush=True)
+            self.status = "ready"
         except Exception as e:
             print(f" failed: {e}", flush=True)
-        self.status = "ready"
+            self.status = "error"
 
     def generate_vlm(self, text_prompt, images, gen):
         """VLM generate — images optional."""
@@ -258,7 +260,6 @@ class DeviceSlot:
 
         token_queue = Queue()
         token_count = 0
-        self._cancel.clear()
         cancelled = False
 
         def streamer_callback(token):
@@ -269,6 +270,9 @@ class DeviceSlot:
 
         def _generate():
             with self.lock:
+                # Clear inside the lock, just before generation, to avoid
+                # racing with the previous request's finally: _cancel.set()
+                self._cancel.clear()
                 self.pipe.generate(history, gen, streamer_callback)
             token_queue.put(None)
 
@@ -333,21 +337,22 @@ class DeviceSlot:
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MAX_REQUEST_BYTES = 50 * 1024 * 1024  # 50 MB — enough for large base64 images
+
 app = Flask("NoLlama",
             template_folder=os.path.join(SCRIPT_DIR, "templates"),
             static_folder=os.path.join(SCRIPT_DIR, "static"))
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 # Device slots — filled in main()
 primary = None     # main model (NPU, GPU, or CPU)
 secondary = None   # optional second model (GPU, for vision or bigger LLM)
 max_dim = 768
-_request_counter = 0
+_request_counter = itertools.count(1)  # thread-safe id generator
 
 
 def make_id():
-    global _request_counter
-    _request_counter += 1
-    return f"arc-{_request_counter:04d}"
+    return f"arc-{next(_request_counter):04d}"
 
 
 def overall_status():
@@ -565,6 +570,7 @@ def chat_completions():
 # ---------------------------------------------------------------------------
 
 ollama_app = Flask("NoLlama-Ollama")
+ollama_app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 OLLAMA_PORT = 11434
 
@@ -730,7 +736,6 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
 
     token_queue = Queue()
     token_count = 0
-    slot._cancel.clear()
 
     def streamer_callback(token):
         if slot._cancel.is_set():
@@ -740,6 +745,7 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
 
     def _generate():
         with slot.lock:
+            slot._cancel.clear()
             slot.pipe.generate(history, gen, streamer_callback)
         token_queue.put(None)
 
@@ -870,7 +876,6 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
 
     token_queue = Queue()
     token_count = 0
-    slot._cancel.clear()
 
     def streamer_callback(token):
         if slot._cancel.is_set():
@@ -880,6 +885,7 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
 
     def _generate():
         with slot.lock:
+            slot._cancel.clear()
             slot.pipe.generate(history, gen, streamer_callback)
         token_queue.put(None)
 
@@ -954,8 +960,13 @@ def detect_devices():
     return devices
 
 
+_banner_lock = threading.Lock()
+_banner_printed = False
+
+
 def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slots):
     """Background thread: load model + warmup on one device."""
+    global _banner_printed
     try:
         slot.device_full = devices.get(slot.device_name, slot.device_name)
         slot.load(model_dir)
@@ -965,12 +976,19 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
         print(f"\n  [{slot.device_name}] ERROR: Failed to load model: {e}")
         print(f"  Is another process using the {slot.device_name}?", flush=True)
 
-    # Print banner when all slots are done
-    all_done = all(
-        s.status in ("ready", "error", "not_configured")
-        for s in banner_slots
-    )
-    if all_done and any(s.status == "ready" for s in banner_slots):
+    # Print banner when all slots are done — only one thread wins
+    with _banner_lock:
+        if _banner_printed:
+            return
+        all_done = all(
+            s.status in ("ready", "error", "not_configured")
+            for s in banner_slots
+        )
+        if not all_done:
+            return
+        _banner_printed = True
+
+    if any(s.status == "ready" for s in banner_slots):
         lines = []
         for s in banner_slots:
             if s.status == "ready":
@@ -1111,12 +1129,14 @@ def main():
     # Start Ollama API on separate port in background thread
     if args.ollama_port:
         print(f"  Ollama API on port {args.ollama_port}", flush=True)
-        ollama_thread = threading.Thread(
-            target=lambda: ollama_app.run(
-                host="0.0.0.0", port=args.ollama_port, threaded=True,
-            ),
-            daemon=True,
-        )
+        def _run_ollama():
+            try:
+                ollama_app.run(
+                    host="0.0.0.0", port=args.ollama_port, threaded=True,
+                )
+            except Exception as e:
+                print(f"  WARNING: Ollama API failed to start: {e}", flush=True)
+        ollama_thread = threading.Thread(target=_run_ollama, daemon=True)
         ollama_thread.start()
 
     # OpenAI API on main thread

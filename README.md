@@ -104,6 +104,26 @@ POST /v1/chat/completions
   [image + "What vehicle is this?"] --> GPU (VLM)
 ```
 
+## Why not OpenVINO Model Server (OVMS)?
+
+Intel already ships OVMS — a production-grade OpenVINO inference server.
+If you're deploying LLMs in a datacenter or on Kubernetes, use OVMS.
+NoLlama is a different target: your laptop.
+
+| | OVMS | NoLlama |
+|---|---|---|
+| Target | Production, datacenter, K8s | Laptop, desktop, local |
+| Runtime | C++ | Python (Flask) |
+| OpenAI API | Yes (recent versions) | Yes |
+| Ollama API | No | **Yes** |
+| Built-in web UI | No (add OpenWebUI) | **Yes** |
+| Auto device detection | No | **Yes** |
+| Dual-device routing | One model per instance | **NPU chat + GPU vision, simultaneously** |
+| Config | JSON, manual | Zero — `install.ps1` and go |
+
+OVMS is a proper inference server. NoLlama is the thing that makes
+your Core Ultra feel like Ollama already ran on it.
+
 ## Usage
 
 ```powershell

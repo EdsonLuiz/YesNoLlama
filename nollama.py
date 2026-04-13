@@ -1133,9 +1133,9 @@ def parse_args():
                    help="Ollama API port (default: 11434, 0 to disable)")
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
-    p.add_argument("--idle-timeout", type=int, default=0,
-                   help="Unload models after N seconds of inactivity "
-                        "(default: 0 = never unload). E.g. --idle-timeout 1800 for 30 min.")
+    p.add_argument("--idle-timeout", type=int, default=1800,
+                   help="Change idle-unload timeout in seconds "
+                        "(default: 1800 = 30 min). Use 0 to disable unloading.")
     return p.parse_args()
 
 

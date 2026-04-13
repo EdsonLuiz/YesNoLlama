@@ -154,17 +154,21 @@ python nollama.py --model-dir model --gpu-model-dir gpu-model
 # Different port
 python nollama.py --port 9000
 
-# Auto-unload models after 30 min of inactivity (frees RAM, reloads on next request)
-python nollama.py --idle-timeout 1800
+# Change the default idle-unload timeout (default is 1800 = 30 min)
+python nollama.py --idle-timeout 600     # unload after 10 min idle
+python nollama.py --idle-timeout 0       # never unload — keep models loaded forever
 ```
 
 ### Idle unload
 
-By default, NoLlama keeps loaded models in memory forever. Pass
-`--idle-timeout <seconds>` to free memory after inactivity. The next
-request triggers an automatic reload — the client just sees a slow
+NoLlama frees model memory after **30 minutes of inactivity by default**
+(an 8B INT4 model holds ~5 GB of RAM; a VLM another ~3 GB). The next
+request automatically reloads the model — the client just sees a slow
 first response (~30-60s for an 8B model on NPU). The web UI shows
 "Reloading model..." while it waits.
+
+Change with `--idle-timeout <seconds>`. Use `0` to keep models loaded
+forever (the old behavior).
 
 `/health` reports `idle_unloaded` slots; the overall status stays
 `ready` because requests can still be served (with a reload).

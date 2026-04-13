@@ -216,12 +216,12 @@ function Install-Model {
         if (Test-Path $TargetDir) {
             $item = Get-Item $TargetDir
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                cmd /c rmdir $TargetDir
+                cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
             }
         }
-        cmd /c mklink /J $TargetDir $Selected.Path
+        cmd /c mklink /J "`"$TargetDir`"" "`"$($Selected.Path)`""
         Write-Host "[OK] $($Selected.Name)" -ForegroundColor Green
         return $true
     }
@@ -233,7 +233,7 @@ function Install-Model {
         if (Test-Path $TargetDir) {
             $item = Get-Item $TargetDir
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                cmd /c rmdir $TargetDir
+                cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
             }
@@ -257,7 +257,7 @@ function Install-Model {
         if (Test-Path $TargetDir) {
             $item = Get-Item $TargetDir
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                cmd /c rmdir $TargetDir
+                cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
             }

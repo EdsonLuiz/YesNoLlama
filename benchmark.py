@@ -28,17 +28,10 @@ import time
 # Config
 # ---------------------------------------------------------------------------
 
-IMAGES_DIR = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), "..", "arc-llm", "export", "images"
-))
-
-# Same vehicle: two front views of the Toyota (SV 34637)
-SAME_1 = os.path.join(IMAGES_DIR, "tr101511_202604070938291044_102237681_F1.jpg")
-SAME_2 = os.path.join(IMAGES_DIR, "tr101511_202604070938291044_102237681_F2.jpg")
-
-# Different vehicle: Toyota vs Suzuki
-DIFF_1 = os.path.join(IMAGES_DIR, "tr101511_202604070938291044_102237681_F1.jpg")
-DIFF_2 = os.path.join(IMAGES_DIR, "tr101511_202604081115431044_102238581_F1.jpg")
+# VLM tests use 4 image paths: two pairs (same-vehicle, different-vehicle).
+# Pass them via --same-1/--same-2/--diff-1/--diff-2 or set NOLLAMA_IMAGES_DIR
+# and put matching files named same-1.jpg, same-2.jpg, diff-1.jpg, diff-2.jpg.
+DEFAULT_IMAGES_DIR = os.environ.get("NOLLAMA_IMAGES_DIR", "")
 
 NO_THINK_SYSTEM = "Respond directly and concisely. Do not use <think> blocks or internal reasoning."
 
@@ -176,18 +169,19 @@ def make_llm_test(name, prompt, no_think=False, max_tokens=4096, force_no_stream
     return name, run
 
 
-TESTS_VLM = [
-    make_vlm_test(
-        "VLM: same vehicle?",
-        SAME_1, SAME_2,
-        "Are these two images of the same vehicle? Answer yes or no, then explain briefly.",
-    ),
-    make_vlm_test(
-        "VLM: different vehicles?",
-        DIFF_1, DIFF_2,
-        "Are these two images of the same vehicle? Answer yes or no, then explain briefly.",
-    ),
-]
+def build_vlm_tests(same_1, same_2, diff_1, diff_2):
+    return [
+        make_vlm_test(
+            "VLM: same vehicle?",
+            same_1, same_2,
+            "Are these two images of the same vehicle? Answer yes or no, then explain briefly.",
+        ),
+        make_vlm_test(
+            "VLM: different vehicles?",
+            diff_1, diff_2,
+            "Are these two images of the same vehicle? Answer yes or no, then explain briefly.",
+        ),
+    ]
 
 TESTS_GPU_TEXT = [
     make_llm_test(
@@ -324,13 +318,42 @@ def main():
                         help="Skip VLM tests")
     parser.add_argument("--vlm-only", action="store_true",
                         help="Skip LLM tests")
+    parser.add_argument("--images-dir", default=DEFAULT_IMAGES_DIR,
+                        help="Directory with same-1/2.jpg, diff-1/2.jpg "
+                             "(or set NOLLAMA_IMAGES_DIR)")
+    parser.add_argument("--same-1", help="Path to 'same vehicle' image A")
+    parser.add_argument("--same-2", help="Path to 'same vehicle' image B")
+    parser.add_argument("--diff-1", help="Path to 'different vehicle' image A")
+    parser.add_argument("--diff-2", help="Path to 'different vehicle' image B")
     args = parser.parse_args()
 
-    # Check images exist
-    for path in (SAME_1, SAME_2, DIFF_1, DIFF_2):
-        if not os.path.isfile(path):
-            print(f"ERROR: Image not found: {path}")
-            sys.exit(1)
+    # Resolve image paths (explicit flags win over --images-dir)
+    def resolve(explicit, default_name):
+        if explicit:
+            return explicit
+        if args.images_dir:
+            return os.path.join(args.images_dir, default_name)
+        return None
+
+    same_1 = resolve(args.same_1, "same-1.jpg")
+    same_2 = resolve(args.same_2, "same-2.jpg")
+    diff_1 = resolve(args.diff_1, "diff-1.jpg")
+    diff_2 = resolve(args.diff_2, "diff-2.jpg")
+
+    # Only require images if VLM tests will actually run (--llm-only skips them)
+    vlm_paths = (same_1, same_2, diff_1, diff_2)
+    vlm_paths_ok = all(p and os.path.isfile(p) for p in vlm_paths)
+    if not args.llm_only and not vlm_paths_ok:
+        missing = [p or "(unset)" for p in vlm_paths if not p or not os.path.isfile(p)]
+        print("ERROR: VLM images missing or unset:")
+        for m in missing:
+            print(f"  {m}")
+        print("\nPass --images-dir, --same-1/--same-2/--diff-1/--diff-2, "
+              "or set NOLLAMA_IMAGES_DIR.")
+        print("Or use --llm-only to skip vision tests.")
+        sys.exit(1)
+
+    TESTS_VLM = build_vlm_tests(same_1, same_2, diff_1, diff_2) if vlm_paths_ok else []
 
     # Check server
     print(f"Connecting to {args.url}...")

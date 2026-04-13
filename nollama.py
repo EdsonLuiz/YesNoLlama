@@ -268,13 +268,21 @@ class DeviceSlot:
             token_queue.put(token)
             return False
 
+        gen_error = [None]  # captured from generate thread
+
         def _generate():
-            with self.lock:
-                # Clear inside the lock, just before generation, to avoid
-                # racing with the previous request's finally: _cancel.set()
-                self._cancel.clear()
-                self.pipe.generate(history, gen, streamer_callback)
-            token_queue.put(None)
+            try:
+                with self.lock:
+                    # Clear inside the lock, just before generation, to avoid
+                    # racing with the previous request's finally: _cancel.set()
+                    self._cancel.clear()
+                    self.pipe.generate(history, gen, streamer_callback)
+            except Exception as e:
+                gen_error[0] = e
+                print(f"{datetime.now():%H:%M:%S} !! [{self.device_name}] "
+                      f"generate error: {e}", flush=True)
+            finally:
+                token_queue.put(None)
 
         t = threading.Thread(target=_generate, daemon=True)
         t.start()
@@ -302,22 +310,34 @@ class DeviceSlot:
                 }
                 yield f"data: {json.dumps(chunk)}\n\n"
 
-            finish_reason = "stop" if not self._cancel.is_set() else "cancelled"
-            chunk = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": self.model_name,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
+            # Capture state BEFORE the finally-block safety-net sets _cancel
+            was_cancelled = self._cancel.is_set()
+            if gen_error[0] is not None:
+                finish_reason = "error"
+                err_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {
+                        "content": f"\n[error: {gen_error[0]}]"
+                    }, "finish_reason": "error"}],
+                }
+                yield f"data: {json.dumps(err_chunk)}\n\n"
+            else:
+                finish_reason = "cancelled" if was_cancelled else "stop"
+                chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": self.model_name,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
             # Safety net: if client disconnects, stop generation
             self._cancel.set()
-            cancelled = self._cancel.is_set()
 
         elapsed = time.perf_counter() - t0
         tps = token_count / elapsed if elapsed > 0 else 0
-        tag = " (cancelled)" if cancelled else ""
+        tag = " (cancelled)" if was_cancelled else (" (error)" if gen_error[0] else "")
         print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
               f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s){tag}",
               flush=True)
@@ -360,9 +380,11 @@ def overall_status():
     slots = [s for s in (primary, secondary) if s and s.status != "not_configured"]
     if not slots:
         return "not_configured"
-    if all(s.status == "ready" for s in slots):
+    # If ANY slot is ready, we can serve requests — a dead secondary shouldn't
+    # kill the primary. /health still shows per-slot detail.
+    if any(s.status == "ready" for s in slots):
         return "ready"
-    if any(s.status == "error" for s in slots):
+    if all(s.status == "error" for s in slots):
         return "error"
     return "loading"
 
@@ -744,10 +766,15 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
         return False
 
     def _generate():
-        with slot.lock:
-            slot._cancel.clear()
-            slot.pipe.generate(history, gen, streamer_callback)
-        token_queue.put(None)
+        try:
+            with slot.lock:
+                slot._cancel.clear()
+                slot.pipe.generate(history, gen, streamer_callback)
+        except Exception as e:
+            print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] [Ollama] "
+                  f"generate error: {e}", flush=True)
+        finally:
+            token_queue.put(None)
 
     t = threading.Thread(target=_generate, daemon=True)
     t.start()
@@ -884,10 +911,15 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
         return False
 
     def _generate():
-        with slot.lock:
-            slot._cancel.clear()
-            slot.pipe.generate(history, gen, streamer_callback)
-        token_queue.put(None)
+        try:
+            with slot.lock:
+                slot._cancel.clear()
+                slot.pipe.generate(history, gen, streamer_callback)
+        except Exception as e:
+            print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] [Ollama] "
+                  f"generate error: {e}", flush=True)
+        finally:
+            token_queue.put(None)
 
     t = threading.Thread(target=_generate, daemon=True)
     t.start()

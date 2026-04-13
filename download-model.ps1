@@ -59,7 +59,7 @@ if (Test-Path $Output) {
     }
     $item = Get-Item $Output
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-        cmd /c rmdir $Output
+        cmd /c rmdir "`"$Output`""
     } else {
         Remove-Item -Recurse -Force $Output
     }

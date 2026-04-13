@@ -67,6 +67,15 @@ Features:
 
 Tested with `benchmark.py` — 1 warmup + 5 runs, outliers discarded.
 
+```powershell
+# Text-only (no images required)
+python benchmark.py --llm-only
+
+# With VLM tests — provide 4 images: two "same vehicle" + two "different"
+python benchmark.py --images-dir C:\path\to\images
+python benchmark.py --same-1 a.jpg --same-2 b.jpg --diff-1 c.jpg --diff-2 d.jpg
+```
+
 **LLM text (Qwen3 8B INT4-CW, same model on NPU and CPU):**
 
 | Test | NPU | CPU |

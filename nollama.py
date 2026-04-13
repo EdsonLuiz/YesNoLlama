@@ -174,13 +174,16 @@ class DeviceSlot:
         self.pipe = None
         self.model_name = ""
         self.model_type = ""             # "vlm" or "llm"
-        self.status = "not_configured"   # -> "loading" -> "warming_up" -> "ready" / "error"
+        self.status = "not_configured"   # not_configured -> loading -> warming_up -> ready / error / idle_unloaded
         self.lock = threading.Lock()
         self._cancel = threading.Event()  # signal to stop generation
+        self.last_used = time.time()     # for idle-unload watchdog
+        self.model_dir = None            # remembered so we can reload after unload
 
     def load(self, model_dir):
         """Load model, auto-detecting VLM vs LLM."""
         self.status = "loading"
+        self.model_dir = model_dir
         self.model_name = model_display_name(model_dir)
         vlm = is_vlm(model_dir)
         self.model_type = "vlm" if vlm else "llm"
@@ -225,6 +228,29 @@ class DeviceSlot:
             print(f" failed: {e}", flush=True)
             self.status = "error"
 
+    def unload(self):
+        """Release the loaded pipeline. Caller must hold self.lock."""
+        if self.pipe is None:
+            return
+        print(f"  [{self.device_name}] Idle — unloading {self.model_name}", flush=True)
+        self.pipe = None
+        self.status = "idle_unloaded"
+        import gc
+        gc.collect()
+
+    def ensure_loaded(self):
+        """Reload pipeline if it was unloaded. Blocks until ready."""
+        if self.pipe is not None and self.status == "ready":
+            return
+        with self.lock:
+            if self.pipe is not None and self.status == "ready":
+                return  # someone else loaded it while we waited
+            if self.model_dir is None:
+                raise RuntimeError(f"Slot {self.device_name} has no model_dir")
+            print(f"  [{self.device_name}] Reloading {self.model_name}...", flush=True)
+            self.load(self.model_dir)
+            self.warmup()
+
     def generate_vlm(self, text_prompt, images, gen):
         """VLM generate — images optional."""
         with self.lock:
@@ -237,6 +263,7 @@ class DeviceSlot:
                 result = self.pipe.generate(
                     prompt=text_prompt, generation_config=gen,
                 )
+            self.last_used = time.time()
         return extract_text(result)
 
     def generate_llm(self, raw_messages, gen):
@@ -246,6 +273,7 @@ class DeviceSlot:
             history.append({"role": msg["role"], "content": msg["content"]})
         with self.lock:
             result = self.pipe.generate(history, gen)
+            self.last_used = time.time()
         return extract_text(result)
 
     def cancel(self):
@@ -277,6 +305,7 @@ class DeviceSlot:
                     # racing with the previous request's finally: _cancel.set()
                     self._cancel.clear()
                     self.pipe.generate(history, gen, streamer_callback)
+                    self.last_used = time.time()
             except Exception as e:
                 gen_error[0] = e
                 print(f"{datetime.now():%H:%M:%S} !! [{self.device_name}] "
@@ -380,9 +409,9 @@ def overall_status():
     slots = [s for s in (primary, secondary) if s and s.status != "not_configured"]
     if not slots:
         return "not_configured"
-    # If ANY slot is ready, we can serve requests — a dead secondary shouldn't
-    # kill the primary. /health still shows per-slot detail.
-    if any(s.status == "ready" for s in slots):
+    # If ANY slot is ready or idle_unloaded (will reload on demand), we can
+    # serve requests. A dead secondary shouldn't kill the primary.
+    if any(s.status in ("ready", "idle_unloaded") for s in slots):
         return "ready"
     if all(s.status == "error" for s in slots):
         return "error"
@@ -393,12 +422,17 @@ def openai_error(message, error_type="invalid_request_error", status=400):
     return jsonify({"error": {"message": message, "type": error_type}}), status
 
 
+def _slot_serviceable(slot):
+    """A slot can serve requests if loaded or just idle-unloaded (will reload)."""
+    return slot and slot.status in ("ready", "idle_unloaded")
+
+
 def _route_request(has_images, requested_model):
     """Pick which DeviceSlot handles this request."""
     # Explicit model@device selection overrides routing
     if requested_model:
         for slot in (primary, secondary):
-            if not slot or slot.status != "ready":
+            if not _slot_serviceable(slot):
                 continue
             # Match "model@DEVICE" or just "model"
             slot_full = f"{slot.model_name}@{slot.device_name}"
@@ -406,11 +440,11 @@ def _route_request(has_images, requested_model):
                 return slot
 
     # Dual mode routing
-    if secondary and secondary.status == "ready":
+    if _slot_serviceable(secondary):
         if has_images:
             # Images → whichever slot is a VLM
             for slot in (secondary, primary):
-                if slot and slot.status == "ready" and slot.model_type == "vlm":
+                if _slot_serviceable(slot) and slot.model_type == "vlm":
                     return slot
             return None  # no VLM loaded
         else:
@@ -421,7 +455,7 @@ def _route_request(has_images, requested_model):
             return primary  # GPU has VLM, text goes to NPU
 
     # Single mode — everything goes to primary
-    return primary if primary and primary.status == "ready" else None
+    return primary if _slot_serviceable(primary) else None
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +544,12 @@ def chat_completions():
             f"Model '{slot.model_name}' on {slot.device_name} does not support images. "
             "Remove image content or load a VLM."
         )
+
+    # Reload if the slot was idle-unloaded (blocks until ready)
+    try:
+        slot.ensure_loaded()
+    except Exception as e:
+        return openai_error(f"Failed to reload model: {e}", "server_error", 500)
 
     # Build generation config
     gen = ovg.GenerationConfig()
@@ -690,6 +730,11 @@ def ollama_chat():
     if has_images and slot.model_type == "llm":
         return jsonify({"error": f"model '{slot.model_name}' does not support images"}), 400
 
+    try:
+        slot.ensure_loaded()
+    except Exception as e:
+        return jsonify({"error": f"Failed to reload model: {e}"}), 500
+
     # Build generation config
     gen = ovg.GenerationConfig()
     gen.max_new_tokens = max_tokens
@@ -770,6 +815,7 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
             with slot.lock:
                 slot._cancel.clear()
                 slot.pipe.generate(history, gen, streamer_callback)
+                slot.last_used = time.time()
         except Exception as e:
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] [Ollama] "
                   f"generate error: {e}", flush=True)
@@ -831,6 +877,11 @@ def ollama_generate():
     slot = _route_request(has_images, requested_model)
     if slot is None:
         return jsonify({"error": "no model ready"}), 503
+
+    try:
+        slot.ensure_loaded()
+    except Exception as e:
+        return jsonify({"error": f"Failed to reload model: {e}"}), 500
 
     gen = ovg.GenerationConfig()
     gen.max_new_tokens = max_tokens
@@ -915,6 +966,7 @@ def _ollama_stream_generate(slot, raw_messages, gen, t0):
             with slot.lock:
                 slot._cancel.clear()
                 slot.pipe.generate(history, gen, streamer_callback)
+                slot.last_used = time.time()
         except Exception as e:
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] [Ollama] "
                   f"generate error: {e}", flush=True)
@@ -992,6 +1044,25 @@ def detect_devices():
     return devices
 
 
+def _idle_watchdog(slots, idle_timeout, check_interval=30):
+    """Background thread: unload slots that have been idle too long."""
+    while True:
+        time.sleep(check_interval)
+        now = time.time()
+        for slot in slots:
+            if not slot or slot.status != "ready":
+                continue
+            if now - slot.last_used < idle_timeout:
+                continue
+            # Try non-blocking lock acquire — skip if a request is in progress
+            if not slot.lock.acquire(blocking=False):
+                continue
+            try:
+                slot.unload()
+            finally:
+                slot.lock.release()
+
+
 _banner_lock = threading.Lock()
 _banner_printed = False
 
@@ -1062,6 +1133,9 @@ def parse_args():
                    help="Ollama API port (default: 11434, 0 to disable)")
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
+    p.add_argument("--idle-timeout", type=int, default=0,
+                   help="Unload models after N seconds of inactivity "
+                        "(default: 0 = never unload). E.g. --idle-timeout 1800 for 30 min.")
     return p.parse_args()
 
 
@@ -1152,6 +1226,16 @@ def main():
 
     for t in threads:
         t.start()
+
+    # Idle watchdog — unload models after inactivity
+    if args.idle_timeout > 0:
+        print(f"  Idle unload after {args.idle_timeout}s of inactivity", flush=True)
+        watchdog = threading.Thread(
+            target=_idle_watchdog,
+            args=(all_slots, args.idle_timeout),
+            daemon=True,
+        )
+        watchdog.start()
 
     # Suppress Flask's default "Serving Flask app" banner — we have our own
     import logging

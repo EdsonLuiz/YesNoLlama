@@ -400,6 +400,22 @@ async function sendMessage() {
     sendBtn.disabled = true;
     const t0 = performance.now();
 
+    // After 3s with no response, check if a model is reloading and show that
+    const reloadCheckTimer = setTimeout(async () => {
+        try {
+            const r = await fetch('/health');
+            const data = await r.json();
+            const reloading = Object.values(data.devices || {}).some(
+                d => d.status === 'loading' || d.status === 'warming_up'
+            );
+            if (reloading && isGenerating) {
+                assistantDiv.innerHTML =
+                    '<span class="typing-indicator"></span> ' +
+                    '<span style="color:var(--text-dim)">Reloading model…</span>';
+            }
+        } catch {}
+    }, 3000);
+
     try {
         abortController = new AbortController();
         const resp = await fetch('/v1/chat/completions', {
@@ -408,6 +424,7 @@ async function sendMessage() {
             signal: abortController.signal,
             body: JSON.stringify(buildRequestBody()),
         });
+        clearTimeout(reloadCheckTimer);
 
         const device = resp.headers.get('X-Device') || '';
         const model = resp.headers.get('X-Model') || '';

@@ -84,6 +84,33 @@
         }
     ],
 
+    "whisper": [
+        {
+            "name": "Whisper Base",
+            "hf_id": "openai/whisper-base",
+            "source": "convert",
+            "weight_format": "fp16",
+            "est_size_gb": 0.3,
+            "notes": "Fastest. English-best."
+        },
+        {
+            "name": "Whisper Small",
+            "hf_id": "openai/whisper-small",
+            "source": "convert",
+            "weight_format": "fp16",
+            "est_size_gb": 1,
+            "notes": "Good balance. Multi-language."
+        },
+        {
+            "name": "Whisper Medium",
+            "hf_id": "openai/whisper-medium",
+            "source": "convert",
+            "weight_format": "fp16",
+            "est_size_gb": 3,
+            "notes": "Best accuracy under 16GB. Multi-language."
+        }
+    ],
+
     "gpu_llm": [
         {
             "name": "Qwen3 14B (INT4)",

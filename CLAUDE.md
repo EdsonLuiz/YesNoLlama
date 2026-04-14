@@ -7,12 +7,13 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - `nollama.py` — Flask server, DeviceSlot class per device, auto-detects VLM/LLM from config.json
 - NPU: LLMPipeline with MAX_PROMPT_LEN=4096, streaming via SSE
 - GPU: VLMPipeline (images) or LLMPipeline (text), no streaming for VLM (OpenVINO limitation)
+- Whisper: WhisperSlot + WhisperPipeline for STT, `POST /v1/audio/transcriptions`, CPU or GPU
 - OpenVINO GenAI may unify VLM/LLMPipeline — when that happens, simplify the dual-pipeline routing
 - Routing: images go to GPU, text goes to NPU (or GPU if no NPU)
 - Web UI: `templates/index.html` + `static/css/style.css` + `static/js/app.js`
 - Collapsible `<think>` blocks, "Just answer me, dammit!" button, temperature slider
 - `threaded=True` on Flask, concurrency via per-device locks
-- `models.json` — curated model registry (npu, gpu_vlm, gpu_llm categories)
+- `models.json` — curated model registry (npu, gpu_vlm, gpu_llm, whisper categories)
 - `install.ps1` detects devices, shows model menu, generates `start.ps1`
 
 ## Environment

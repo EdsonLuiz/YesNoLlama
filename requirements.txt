@@ -5,6 +5,7 @@ openvino-genai>=2026.1.0.0
 openvino-tokenizers>=2026.1.0.0
 pillow>=10.3.0
 numpy>=1.26.4
+soundfile>=0.12.0
 
 # Model export (used by install.ps1)
 optimum-intel[openvino]>=1.27.0

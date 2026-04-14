@@ -1,5 +1,35 @@
 # TODO
 
+## Text-to-Speech (TTS) — `/v1/audio/speech`
+
+`openvino_genai.Text2SpeechPipeline` exists. Only SpeechT5 supported so far.
+
+**Export:**
+```bash
+optimum-cli export openvino \
+  --model microsoft/speecht5_tts \
+  --weight-format int4 \
+  --model-kwargs '{"vocoder":"microsoft/speecht5_hifigan"}' \
+  speecht5_tts
+```
+
+**What's needed:**
+- `--tts-dir` flag, similar to `--whisper-dir`
+- `POST /v1/audio/speech` endpoint (OpenAI-compatible)
+- Speaker embedding files (512×float32 `.bin`), map OpenAI voice names (`alloy`, `echo`, etc.) to them
+- CPU or GPU only — no NPU support for encoder-decoder models
+
+**Caveats:**
+- SpeechT5 is serviceable but clearly first-gen neural TTS, not ElevenLabs quality
+- English-centric — Norwegian output would be rough
+- Voice selection via embedding files, not named presets — UX is awkward
+- Small model (~few hundred MB), fast on CPU
+
+**Verdict:** Clean API surface, completes the OpenAI compatibility story. Worth adding
+once STT (Whisper) is proven. Low priority until then.
+
+---
+
 ## Spinoff project idea: Ollama API wrapper for any OpenAI-compatible server
 
 **Not part of NoLlama.** Separate repo if pursued.

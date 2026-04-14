@@ -11,6 +11,7 @@ Usage:
     python nollama.py --device GPU                           # force GPU
     python nollama.py --gpu-model-dir gpu-model              # dual: NPU chat + GPU vision
     python nollama.py --model-dir ~/models/qwen3-14b-int4-ov --device GPU  # big LLM on GPU
+    python nollama.py --whisper-dir whisper-model             # add speech-to-text
 """
 
 import argparse
@@ -33,6 +34,10 @@ import openvino as ov
 import openvino_genai as ovg
 from flask import Flask, Response, jsonify, request, render_template
 from PIL import Image
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
 
 # ---------------------------------------------------------------------------
 # Model detection
@@ -382,6 +387,80 @@ class DeviceSlot:
 
 
 # ---------------------------------------------------------------------------
+# Whisper (speech-to-text) slot
+# ---------------------------------------------------------------------------
+
+def _load_audio(file_storage):
+    """Read uploaded audio file to float32 numpy array at 16 kHz."""
+    if sf is None:
+        raise RuntimeError("soundfile not installed. pip install soundfile")
+    audio, sr = sf.read(io.BytesIO(file_storage.read()), dtype="float32")
+    # Stereo → mono
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    # Resample to 16 kHz if needed
+    if sr != 16000:
+        target_len = int(len(audio) * 16000 / sr)
+        audio = np.interp(
+            np.linspace(0, len(audio) - 1, target_len),
+            np.arange(len(audio)),
+            audio,
+        ).astype(np.float32)
+    return audio
+
+
+class WhisperSlot:
+    """Holds a WhisperPipeline for speech-to-text."""
+
+    def __init__(self, device_name):
+        self.device_name = device_name
+        self.device_full = ""
+        self.pipe = None
+        self.model_name = ""
+        self.model_type = "stt"
+        self.status = "not_configured"
+        self.lock = threading.Lock()
+
+    def load(self, model_dir):
+        self.status = "loading"
+        self.model_name = model_display_name(model_dir)
+        print(f"  [{self.device_name}] Loading Whisper ({self.model_name})...",
+              flush=True)
+        WhisperPipe = getattr(ovg, "WhisperPipeline", None)
+        if WhisperPipe is None:
+            raise RuntimeError(
+                "No WhisperPipeline in this openvino_genai build. "
+                "Upgrade to openvino-genai >= 2025.1."
+            )
+        self.pipe = WhisperPipe(str(model_dir), self.device_name)
+
+    def warmup(self):
+        self.status = "ready"
+        print(f"  [{self.device_name}] Whisper ready", flush=True)
+
+    def transcribe(self, audio_samples, language=None):
+        """Transcribe float32 audio at 16 kHz. Returns text."""
+        kwargs = {}
+        if language:
+            kwargs["language"] = f"<|{language}|>"
+            kwargs["task"] = "transcribe"
+        with self.lock:
+            result = self.pipe.generate(audio_samples, **kwargs)
+        if hasattr(result, "texts") and result.texts:
+            return result.texts[0].strip()
+        return str(result).strip()
+
+    @property
+    def info(self):
+        return {
+            "status": self.status,
+            "model": self.model_name,
+            "type": self.model_type,
+            "device": self.device_full,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 
@@ -394,8 +473,9 @@ app = Flask("NoLlama",
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 # Device slots — filled in main()
-primary = None     # main model (NPU, GPU, or CPU)
-secondary = None   # optional second model (GPU, for vision or bigger LLM)
+primary = None        # main model (NPU, GPU, or CPU)
+secondary = None      # optional second model (GPU, for vision or bigger LLM)
+whisper_slot = None   # optional Whisper STT model
 max_dim = 768
 _request_counter = itertools.count(1)  # thread-safe id generator
 
@@ -474,7 +554,10 @@ def health():
         devices[primary.device_name.lower()] = primary.info
     if secondary and secondary.status != "not_configured":
         devices[secondary.device_name.lower()] = secondary.info
-    return jsonify({"status": overall_status(), "devices": devices})
+    result = {"status": overall_status(), "devices": devices}
+    if whisper_slot and whisper_slot.status != "not_configured":
+        result["whisper"] = whisper_slot.info
+    return jsonify(result)
 
 
 @app.route("/v1/models", methods=["GET"])
@@ -488,6 +571,13 @@ def list_models():
                 "created": 0,
                 "owned_by": f"local-{slot.device_name.lower()}",
             })
+    if whisper_slot and whisper_slot.status == "ready":
+        data.append({
+            "id": f"whisper@{whisper_slot.device_name}",
+            "object": "model",
+            "created": 0,
+            "owned_by": f"local-{whisper_slot.device_name.lower()}",
+        })
     return jsonify({"object": "list", "data": data})
 
 
@@ -498,6 +588,49 @@ def cancel_generation():
         if slot:
             slot.cancel()
     return jsonify({"status": "ok"})
+
+
+@app.route("/v1/audio/transcriptions", methods=["POST"])
+def audio_transcriptions():
+    """OpenAI-compatible speech-to-text. Accepts multipart form with audio file."""
+    if not whisper_slot or whisper_slot.status != "ready":
+        return openai_error(
+            "No speech-to-text model loaded. Use --whisper-dir.", "server_error", 503,
+        )
+
+    if "file" not in request.files:
+        return openai_error("'file' is required (multipart form upload)")
+
+    audio_file = request.files["file"]
+    language = request.form.get("language")
+    response_format = request.form.get("response_format", "json")
+
+    try:
+        audio_samples = _load_audio(audio_file)
+    except Exception as e:
+        return openai_error(f"Failed to read audio: {e}")
+
+    duration = len(audio_samples) / 16000
+    lang_tag = f", lang={language}" if language else ""
+    print(f"\n{datetime.now():%H:%M:%S} <- [{whisper_slot.device_name}] "
+          f"Whisper {duration:.1f}s audio{lang_tag}", flush=True)
+
+    t0 = time.perf_counter()
+    try:
+        text = whisper_slot.transcribe(audio_samples, language=language)
+    except Exception as e:
+        print(f"{datetime.now():%H:%M:%S} !! [{whisper_slot.device_name}] "
+              f"Whisper error: {e}", flush=True)
+        return openai_error(f"Transcription failed: {e}", "server_error", 500)
+
+    elapsed = time.perf_counter() - t0
+    print(f"{datetime.now():%H:%M:%S} -> [{whisper_slot.device_name}] "
+          f"Whisper {len(text)} chars in {elapsed:.1f}s", flush=True)
+
+    if response_format == "text":
+        return Response(text, mimetype="text/plain")
+
+    return jsonify({"text": text})
 
 
 @app.route("/v1/chat/completions", methods=["POST"])
@@ -1133,6 +1266,10 @@ def parse_args():
                    help="Ollama API port (default: 11434, 0 to disable)")
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
+    p.add_argument("--whisper-dir", default=None,
+                   help="Whisper model directory for speech-to-text (enables /v1/audio/transcriptions)")
+    p.add_argument("--whisper-device", default="CPU",
+                   help="Device for Whisper: CPU or GPU (default: CPU)")
     p.add_argument("--idle-timeout", type=int, default=1800,
                    help="Change idle-unload timeout in seconds "
                         "(default: 1800 = 30 min). Use 0 to disable unloading.")
@@ -1140,7 +1277,7 @@ def parse_args():
 
 
 def main():
-    global primary, secondary, max_dim
+    global primary, secondary, whisper_slot, max_dim
 
     args = parse_args()
     model_dir = os.path.expanduser(args.model_dir)
@@ -1189,6 +1326,9 @@ def main():
     if args.gpu_model_dir and not os.path.isdir(args.gpu_model_dir):
         print(f"ERROR: GPU model directory not found: {args.gpu_model_dir}")
         sys.exit(1)
+    if args.whisper_dir and not os.path.isdir(args.whisper_dir):
+        print(f"ERROR: Whisper model directory not found: {args.whisper_dir}")
+        sys.exit(1)
 
     # 5. Create device slots
     primary = DeviceSlot(device)
@@ -1200,6 +1340,14 @@ def main():
         else:
             secondary = DeviceSlot("GPU")
             all_slots.append(secondary)
+
+    if args.whisper_dir:
+        whisper_device = args.whisper_device.upper()
+        if whisper_device not in devices and whisper_device != "CPU":
+            print(f"WARNING: Whisper device {whisper_device} not available, falling back to CPU.")
+            whisper_device = "CPU"
+        whisper_slot = WhisperSlot(whisper_device)
+        all_slots.append(whisper_slot)
 
     # 6. Start Flask, load models in background
     ports_msg = f"port {args.port}"
@@ -1223,6 +1371,15 @@ def main():
             daemon=True,
         )
         threads.append(t2)
+
+    if whisper_slot:
+        tw = threading.Thread(
+            target=_load_in_background,
+            args=(whisper_slot, args.whisper_dir, devices, args.port,
+                  args.ollama_port, all_slots),
+            daemon=True,
+        )
+        threads.append(tw)
 
     for t in threads:
         t.start()

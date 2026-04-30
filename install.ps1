@@ -15,7 +15,9 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModelsRoot = Join-Path $HOME "models"
+$StartScript = Join-Path $ScriptDir "start.ps1"
 Push-Location $ScriptDir
+
 
 Write-Host ""
 Write-Host "=== NoLlama Install ===" -ForegroundColor Cyan
@@ -33,17 +35,32 @@ if (Test-Path $VenvDir) {
     python -m venv $VenvDir
     if (-not $?) { Write-Host "ERROR: Failed to create venv. Is Python installed?" -ForegroundColor Red; Pop-Location; exit 1 }
     Write-Host "[OK] venv created"
+
+    Write-Host "Upgrading pip core tools..."
+    # Only upgrade pip and wheel; avoid setuptools to prevent torch conflicts
+    & (Join-Path $VenvDir "Scripts\python.exe") -m pip install --no-cache-dir --upgrade pip wheel --quiet
 }
 
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 & $ActivateScript
 
 Write-Host "Installing dependencies..."
-python -m pip install --no-cache-dir --upgrade pip wheel setuptools 2>$null
-python -m pip install --no-cache-dir -r (Join-Path $ScriptDir "requirements.txt")
-if (-not $?) { Write-Host "ERROR: pip install failed" -ForegroundColor Red; Pop-Location; exit 1 }
+# Temporarily allow Continue to handle pip resolver warnings without crashing
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
+python -m pip install --no-cache-dir -r (Join-Path $ScriptDir "requirements.txt") --quiet
+$pipResult = $LASTEXITCODE
+
+$ErrorActionPreference = $oldEAP
+
+if ($pipResult -ne 0) {
+    Write-Host "ERROR: pip install failed (exit code $pipResult)" -ForegroundColor Red
+    Pop-Location; exit 1
+}
 Write-Host "[OK] Dependencies installed"
 Write-Host ""
+
 
 # ---------------------------------------------------------------------------
 # 2. Detect devices
@@ -132,57 +149,77 @@ function Show-ModelMenu {
         [string]$Title,
         [array]$RegistryModels,
         [array]$LocalModels,
-        [string]$LocalLabel = "Already on disk (instant)",
+        [string]$LocalLabel = "Already on disk",
         [bool]$AllowSkip = $false
     )
 
     Write-Host "=== $Title ===" -ForegroundColor Cyan
     Write-Host ""
 
-    $items = @()
-
-    # Local models first
-    if ($LocalModels.Count -gt 0) {
-        Write-Host "  $LocalLabel" -ForegroundColor Yellow
-        foreach ($lm in $LocalModels) {
-            $items += [PSCustomObject]@{
-                Action = "local"; Name = $lm.Name; Path = $lm.Path
-                HfId = $null; Source = $null; Weight = $null; Trust = $false
-                SizeGB = $lm.SizeGB; Notes = "Already on disk"
-            }
-            $i = $items.Count
-            Write-Host "    $i. $($lm.Name)" -NoNewline
-            Write-Host "  ($($lm.SizeGB) GB)" -ForegroundColor DarkGray -NoNewline
-            Write-Host "  Already on disk" -ForegroundColor DarkGray
-        }
-        Write-Host ""
+    $localMap = @{}
+    foreach ($lm in $LocalModels) {
+        $localMap[$lm.Name.ToLower()] = $lm
     }
 
-    # Registry models — skip any already on disk
-    $localNames = @($LocalModels | ForEach-Object { $_.Name.ToLower() })
-    $filteredRegistry = @($RegistryModels | Where-Object {
-        $repoName = ($_.hf_id -split '/')[-1].ToLower()
-        $repoName -notin $localNames
-    })
-    if ($filteredRegistry.Count -gt 0) {
-        Write-Host "  Download from HuggingFace:" -ForegroundColor Yellow
-        foreach ($dm in $filteredRegistry) {
-            $dlTag = if ($dm.source -eq "pre-exported") { "download" } else { "convert" }
-            $items += [PSCustomObject]@{
-                Action = $dm.source; Name = $dm.name; Path = $null
-                HfId = $dm.hf_id; Source = $dm.source
-                Weight = $dm.weight_format; Trust = $dm.trust_remote_code
-                SizeGB = $dm.est_size_gb; Notes = $dm.notes
-            }
-            $i = $items.Count
-            Write-Host "    $i. $($dm.name)" -NoNewline
-            Write-Host "  (~$($dm.est_size_gb) GB, $dlTag)" -ForegroundColor DarkGray -NoNewline
-            Write-Host "  $($dm.notes)" -ForegroundColor DarkGray
+    $items = @()
+
+    # 1. Registry models — check if already on disk
+    foreach ($dm in $RegistryModels) {
+        $repoName = ($dm.hf_id -split '/')[-1].ToLower()
+        $isLocal = $localMap.ContainsKey($repoName)
+        
+        $item = [PSCustomObject]@{
+            Name = $dm.name
+            SizeGB = $dm.est_size_gb
+            Notes = $dm.notes
         }
+
+        if ($isLocal) {
+            $lm = $localMap[$repoName]
+            $item | Add-Member -MemberType NoteProperty -Name "Action" -Value "local"
+            $item | Add-Member -MemberType NoteProperty -Name "Path"   -Value $lm.Path
+            $item.SizeGB = $lm.SizeGB
+            $item.Notes = "Already on disk (Instant)"
+            $localMap.Remove($repoName) # mark as handled
+        } else {
+            $item | Add-Member -MemberType NoteProperty -Name "Action" -Value $dm.source
+            $item | Add-Member -MemberType NoteProperty -Name "Path"   -Value $null
+            $item | Add-Member -MemberType NoteProperty -Name "HfId"   -Value $dm.hf_id
+            $item | Add-Member -MemberType NoteProperty -Name "Source" -Value $dm.source
+            $item | Add-Member -MemberType NoteProperty -Name "Weight" -Value $dm.weight_format
+            $item | Add-Member -MemberType NoteProperty -Name "Trust"  -Value $dm.trust_remote_code
+        }
+        $items += $item
+    }
+
+    # 2. Remaining local models (custom/manual)
+    foreach ($lm in $localMap.Values) {
+        $items += [PSCustomObject]@{
+            Action = "local"; Name = $lm.Name; Path = $lm.Path; SizeGB = $lm.SizeGB; Notes = "Manual install (local)"
+            HfId = $null; Source = $null; Weight = $null; Trust = $false
+        }
+    }
+
+    # Display list
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $it = $items[$i]
+        $idx = $i + 1
+        $color = if ($it.Action -eq "local") { "Green" } else { "Gray" }
+        
+        Write-Host "    $idx. $($it.Name)" -NoNewline
+        Write-Host "  ($($it.SizeGB) GB)" -ForegroundColor DarkGray -NoNewline
+        
+        if ($it.Action -eq "local") {
+            Write-Host "  [LOCAL]" -ForegroundColor Green -NoNewline
+        } else {
+            $tag = if ($it.Action -eq "pre-exported") { "download" } else { "convert" }
+            Write-Host "  ($tag)" -ForegroundColor DarkGray -NoNewline
+        }
+        
+        Write-Host "  $($it.Notes)" -ForegroundColor DarkGray
     }
 
     Write-Host ""
-
     if ($AllowSkip) {
         $prompt = "Pick a model [1-$($items.Count)] or press Enter to skip"
     } else {
@@ -202,6 +239,7 @@ function Show-ModelMenu {
     }
 }
 
+
 # ---------------------------------------------------------------------------
 # Helper: download or link a model into a target directory
 # ---------------------------------------------------------------------------
@@ -212,18 +250,45 @@ function Install-Model {
         [string]$TargetDir
     )
 
+    # 1. Check if the target directory already has this exact model
+    if (Test-Path $TargetDir) {
+        $item = Get-Item $TargetDir
+        $isJunction = $item.Attributes -band [System.IO.FileAttributes]::ReparsePoint
+        
+        if ($Selected.Action -eq "local") {
+            if ($isJunction) {
+                $currentTarget = (Get-Item $TargetDir).Target
+                if ($currentTarget -eq $Selected.Path) {
+                    Write-Host "  [OK] Model '$($Selected.Name)' is already configured." -ForegroundColor Green
+                    return $true
+                }
+            }
+        } else {
+            # For non-local (download/convert), if it's a real directory, 
+            # we don't have a reliable way to know if it's the SAME model 
+            # without checking config.json or similar, but usually if the 
+            # directory exists and we aren't linking, it's safer to proceed 
+            # or ask. However, the user said "pule para a próxima etapa".
+            # So if it's a real directory and it's a model, we'll assume it's okay.
+            if (-not $isJunction -and (Test-Path (Join-Path $TargetDir "config.json"))) {
+                Write-Host "  [OK] Model directory already exists at $TargetDir. Skipping download." -ForegroundColor Green
+                return $true
+            }
+        }
+    }
+
     if ($Selected.Action -eq "local") {
-        Write-Host "Linking to: $($Selected.Path)" -ForegroundColor Green
+        Write-Host "Linking: $($Selected.Name) -> $($Selected.Path)" -ForegroundColor Cyan
         if (Test-Path $TargetDir) {
-            $item = Get-Item $TargetDir
-            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            if ((Get-Item $TargetDir).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
             }
         }
         cmd /c mklink /J "`"$TargetDir`"" "`"$($Selected.Path)`""
-        Write-Host "[OK] $($Selected.Name)" -ForegroundColor Green
+        if (-not $?) { Write-Host "ERROR: Failed to create junction link." -ForegroundColor Red; return $false }
+        Write-Host "[OK] Linked" -ForegroundColor Green
         return $true
     }
 
@@ -232,8 +297,7 @@ function Install-Model {
         Write-Host "  From: $($Selected.HfId)"
         Write-Host ""
         if (Test-Path $TargetDir) {
-            $item = Get-Item $TargetDir
-            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            if ((Get-Item $TargetDir).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
@@ -243,12 +307,12 @@ function Install-Model {
         hf download $Selected.HfId --local-dir $TargetDir
         if (-not $?) {
             Write-Host "ERROR: Download failed." -ForegroundColor Red
-            Write-Host "  If 401/403: run 'huggingface-cli login' first" -ForegroundColor Yellow
             return $false
         }
-        Write-Host "[OK] $($Selected.Name)" -ForegroundColor Green
+        Write-Host "[OK] Downloaded" -ForegroundColor Green
         return $true
     }
+
 
     if ($Selected.Action -eq "convert") {
         Write-Host "Converting $($Selected.Name)..." -ForegroundColor Cyan
@@ -256,8 +320,7 @@ function Install-Model {
         Write-Host "  This may take 5-20 minutes."
         Write-Host ""
         if (Test-Path $TargetDir) {
-            $item = Get-Item $TargetDir
-            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            if ((Get-Item $TargetDir).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 cmd /c rmdir "`"$TargetDir`""
             } else {
                 Remove-Item -Recurse -Force $TargetDir
@@ -270,10 +333,9 @@ function Install-Model {
         & optimum-cli @args
         if (-not $?) {
             Write-Host "ERROR: Conversion failed." -ForegroundColor Red
-            Write-Host "  If unsupported architecture: needs newer optimum-intel" -ForegroundColor Yellow
             return $false
         }
-        Write-Host "[OK] $($Selected.Name)" -ForegroundColor Green
+        Write-Host "[OK] Converted" -ForegroundColor Green
         return $true
     }
 
@@ -281,13 +343,58 @@ function Install-Model {
     return $false
 }
 
+
 # ---------------------------------------------------------------------------
-# 4. Model selection — NPU-first
+# 4. Model selection
 # ---------------------------------------------------------------------------
 
 $ModelDir = Join-Path $ScriptDir "model"
 $GpuModelDir = Join-Path $ScriptDir "gpu-model"
+$WhisperModelDir = Join-Path $ScriptDir "whisper-model"
+
+# --- Check for existing models to avoid re-selection ---
+function Get-ModelName($path) {
+    if (Test-Path (Join-Path $path "openvino_language_model.bin")) {
+        return (Get-Item $path).Target -replace '^.*\\models\\', ''
+    }
+    if (Test-Path (Join-Path $path "openvino_model.bin")) {
+        return (Get-Item $path).Target -replace '^.*\\models\\', ''
+    }
+    return $null
+}
+
+$currPrimary = Get-ModelName $ModelDir
+$currGpu = Get-ModelName $GpuModelDir
+$currWhisper = Get-ModelName $WhisperModelDir
+
+if ($currPrimary -or $currGpu -or $currWhisper) {
+    Write-Host "Current model configuration detected:" -ForegroundColor Cyan
+    if ($currPrimary) { Write-Host "  [Primary] $currPrimary" -ForegroundColor DarkGray }
+    if ($currGpu)     { Write-Host "  [GPU]     $currGpu"     -ForegroundColor DarkGray }
+    if ($currWhisper) { Write-Host "  [Whisper] $currWhisper" -ForegroundColor DarkGray }
+    Write-Host ""
+    $keep = Read-Host "Keep current models? [Y/n]"
+    if ($keep -eq "" -or $keep -match "^y") {
+        Write-Host "Skipping model selection." -ForegroundColor Green
+        # ---------------------------------------------------------------------------
+        # 5. Generate start.ps1 (fast path)
+        # ---------------------------------------------------------------------------
+        $Content = @'
+param([switch]$Select)
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+& (Join-Path $ScriptDir "start-template.ps1") -Select:$Select
+'@
+        Set-Content -Path $StartScript -Value $Content -Encoding UTF8
+        Write-Host "[OK] Generated start.ps1" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "=== NoLlama install complete ===" -ForegroundColor Green
+        Write-Host "To start the server: .\start.ps1"
+        Pop-Location; exit 0
+    }
+}
+
 $StartArgs = @()  # collect args for start.ps1
+
 
 if ($HasNPU) {
     # --- Step 1: NPU chat model ---

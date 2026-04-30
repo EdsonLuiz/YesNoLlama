@@ -39,8 +39,8 @@ $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 & $ActivateScript
 
 Write-Host "Installing dependencies..."
-python -m pip install --upgrade pip wheel setuptools 2>&1 | Out-Null
-python -m pip install -r (Join-Path $ScriptDir "requirements.txt")
+python -m pip install --no-cache-dir --upgrade pip wheel setuptools 2>$null
+python -m pip install --no-cache-dir -r (Join-Path $ScriptDir "requirements.txt")
 if (-not $?) { Write-Host "ERROR: pip install failed" -ForegroundColor Red; Pop-Location; exit 1 }
 Write-Host "[OK] Dependencies installed"
 Write-Host ""
@@ -313,9 +313,9 @@ if ($HasNPU) {
         Write-Host ""
         Write-Host "  You also have an Intel ARC GPU. What do you want to use it for?"
         Write-Host ""
-        Write-Host "    A. Vision model  — image understanding alongside NPU chat"
-        Write-Host "    B. Bigger LLM    — much smarter chat than the NPU model"
-        Write-Host "    C. Skip          — NPU chat only"
+        Write-Host "    A. Vision model  - image understanding alongside NPU chat"
+        Write-Host "    B. Bigger LLM    - much smarter chat than the NPU model"
+        Write-Host "    C. Skip          - NPU chat only"
         Write-Host ""
         while ($true) {
             $gpuChoice = (Read-Host "  [A/B/C]").ToUpper()

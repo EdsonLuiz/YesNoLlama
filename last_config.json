@@ -1,0 +1,5 @@
+{
+    "Device":  "GPU",
+    "ModelPath":  "C:\\Users\\Edson\\nollama2\\gpu-model",
+    "ModelName":  "qwen3_moe (gpu-model)"
+}

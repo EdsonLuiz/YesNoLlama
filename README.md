@@ -19,10 +19,10 @@ compatible APIs — so any client that speaks to either just works.
 .\start.ps1
 ```
 
-That's it. `install.ps1` detects your hardware, lets you pick a model,
-downloads it, and generates `start.ps1`. The launcher waits for the
-model to load (with a progress indicator), then opens the built-in
-chat UI in your browser at http://localhost:8000.
+That's it. `install.ps1` sets up the environment and downloads your first model.
+The new `start.ps1` launcher automatically detects your models and hardware,
+lets you pick a configuration, remembers it for next time (Quick Start),
+and opens the built-in chat UI at http://localhost:8000.
 
 ## What it does
 
@@ -33,7 +33,8 @@ chat UI in your browser at http://localhost:8000.
 - **Streaming** — token-by-token for text chat, with collapsible thinking blocks
 - **Dual device** — NPU for chat + GPU for vision, simultaneously
 - **Built-in web UI** — chat, image drop zone, model selector, dark theme
-- **Model menu** — curated list of verified models, no conversion nightmares
+- **Model Library** — scans `~/models/` automatically to find your downloads
+- **Interactive Launcher** — pick model and device on startup, or use Quick Start
 
 ## Web UI
 
@@ -140,7 +141,10 @@ your Core Ultra feel like Ollama already ran on it.
 ## Usage
 
 ```powershell
-# Auto-detect (picks best device)
+# Launch with interactive selection
+.\start.ps1 -Select
+
+# Auto-detect (picks best device or last used)
 python nollama.py
 
 # Force a specific device
@@ -154,10 +158,23 @@ python nollama.py --model-dir model --gpu-model-dir gpu-model
 # Different port
 python nollama.py --port 9000
 
-# Change the default idle-unload timeout (default is 1800 = 30 min)
-python nollama.py --idle-timeout 600     # unload after 10 min idle
-python nollama.py --idle-timeout 0       # never unload — keep models loaded forever
+## Interactive Launcher
+
+NoLlama features a smart interactive launcher (`start.ps1`) that simplifies model and device management.
+
+### Quick Start
+Running `.\start.ps1` without arguments will automatically use your last chosen model and device. If it's your first time, it will prompt you for a selection.
+
+### Change Selection
+To change your current model or device, use the `-Select` flag:
+```powershell
+.\start.ps1 -Select
 ```
+The menu is organized by device availability (**NPU**, **GPU**, **CPU**) and scans your model library (`~/models/`) to show only the models you have already downloaded or converted.
+
+### Configuration
+- **`devices.json`**: Stores your hardware detection results (created during install).
+- **`last_config.json`**: Stores your last model path and device for Quick Start.
 
 ### Idle unload
 

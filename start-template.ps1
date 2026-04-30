@@ -35,6 +35,7 @@ function Get-LocalModels {
             if ($path -eq $ModelsRoot) {
                 $items = Get-ChildItem -Path $path -Directory
             } else {
+                # For ./model and ./gpu-model, check if they are valid OpenVINO models
                 if ((Test-Path (Join-Path $path "openvino_language_model.bin")) -or (Test-Path (Join-Path $path "openvino_model.bin"))) {
                     $items = @(Get-Item $path)
                 }
@@ -45,26 +46,64 @@ function Get-LocalModels {
                 if (-not (Test-Path $binPath)) { $binPath = Join-Path $item.FullName "openvino_model.bin" }
                 
                 if (Test-Path $binPath) {
-                    $displayName = $item.Name
-                    $npuOk = ($item.Name -match "int4-cw" -or $item.Name -match "cw-ov")
+                    # 1. Resolve effective name for NPU check (junction target name)
+                    $effectiveName = $item.Name
+                    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                        $target = (Get-Item $item.FullName).Target
+                        $effectiveName = Split-Path $target -Leaf
+                    }
                     
-                    # Try to get a better name from config.json
-                    $cfgPath = Join-Path $item.FullName "config.json"
-                    if (Test-Path $cfgPath) {
+                    # NPU needs int4-cw or cw-ov in the name
+                    $npuOk = ($effectiveName -match "int4-cw" -or $effectiveName -match "cw-ov")
+                    
+                    # 2. Extract best display name
+                    $displayName = $effectiveName # fallback to actual folder name
+                    
+                    # Priority 1: README.md base_model
+                    $readmePath = Join-Path $item.FullName "README.md"
+                    if (Test-Path $readmePath) {
                         try {
-                            $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-                            if ($cfg._name_or_path) { $displayName = Split-Path $cfg._name_or_path -Leaf }
-                            elseif ($cfg.model_type) { $displayName = "$($cfg.model_type) ($($item.Name))" }
+                            $readme = Get-Content $readmePath -Raw
+                            # Improved regex: allows newlines after colon, handles optional YAML list dash '-'
+                            # (?s) allows . to match newlines, though we use \s which already does.
+                            if ($readme -match "(?s)base_model:\s*(?:-\s*)?([a-zA-Z0-9\-\._/]+)") {
+                                $displayName = $Matches[1]
+                            }
                         } catch {}
                     }
                     
+                    # Priority 2: config.json (if README failed or doesn't have base_model)
+                    if ($displayName -eq $effectiveName) {
+                        $cfgPath = Join-Path $item.FullName "config.json"
+                        if (Test-Path $cfgPath) {
+                            try {
+                                $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+                                if ($cfg._name_or_path) { 
+                                    $displayName = Split-Path $cfg._name_or_path -Leaf 
+                                } elseif ($cfg.model_type) { 
+                                    $displayName = "$($cfg.model_type)" 
+                                }
+                            } catch {}
+                        }
+                    }
+                    
+                    # 3. NPU Compatibility
+                    # Lenient check: optimization tags OR if it's the primary linked model
+                    $npuOk = ($effectiveName -match "int4-cw" -or $effectiveName -match "cw-ov" -or $item.Name -eq "model")
+
+                    # Add suffix if it's a project-local link (e.g. " (Primary)")
+                    if ($item.Name -eq "model") { $displayName += " (Primary)" }
+                    elseif ($item.Name -eq "gpu-model") { $displayName += " (GPU Model)" }
+
                     $models += [PSCustomObject]@{ Name = $displayName; Path = $item.FullName; NpuOk = $npuOk }
+
                 }
             }
         }
     }
     return $models
 }
+
 
 # ---------------------------------------------------------------------------
 # 3. Interactive Selection Logic
@@ -111,11 +150,17 @@ if ($ShouldShowMenu) {
     }
 
     # --- Group: CPU ---
-    Write-Host "[CPU]" -ForegroundColor Yellow
-    foreach ($m in $LocalModels) {
-        $menuItems += [PSCustomObject]@{ Device = "CPU"; Model = $m }
-        Write-Host "  $($menuItems.Count). $($m.Name)"
+    # Only show CPU if explicitly requested or if no NPU/GPU found, 
+    # but the user said "CPU não é uma opçao disponivel".
+    # We will hide it if NPU or GPU are present to reduce clutter.
+    if (-not $DeviceInfo.NPU -and -not $DeviceInfo.GPU) {
+        Write-Host "[CPU]" -ForegroundColor Yellow
+        foreach ($m in $LocalModels) {
+            $menuItems += [PSCustomObject]@{ Device = "CPU"; Model = $m }
+            Write-Host "  $($menuItems.Count). $($m.Name)"
+        }
     }
+
 
     Write-Host ""
     while ($true) {
